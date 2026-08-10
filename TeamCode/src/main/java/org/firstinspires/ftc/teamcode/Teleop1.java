@@ -15,11 +15,14 @@ import com.qualcomm.robotcore.util.ElapsedTime;
  *   lift motor (dpad_up / dpad_down).
  *
  * Shooter flow: pressing the trigger turns everything else off and spins the
- * shooter up to TARGET_RPM under PID control. Feeding (intake/mixer/feeder)
- * only runs while the flywheel is at speed: it turns on once RPM rises within
- * RPM_TOLERANCE_ENTER of target, and pauses again if a shot drags RPM down
- * past RPM_TOLERANCE_EXIT, so every ball is only fired once the flywheel has
- * recovered. Toggling the shooter off resets this state and the PID state.
+ * shooter up to TARGET_RPM under PID control. Once at speed, balls are fed in
+ * short pulses (FEED_PULSE_SECONDS long) instead of one continuous run: each
+ * pulse pushes roughly one ball into the flywheel, then feeding pauses just
+ * long enough for RPM to climb back within RPM_TOLERANCE_ENTER of target
+ * before the next pulse starts. Because each pause is sized to a single
+ * shot's RPM dip rather than several shots' worth, the shooter keeps firing
+ * in a steady stream instead of visibly stopping every few balls to re-spin.
+ * Toggling the shooter off resets this state and the PID state.
  */
 @TeleOp(name = "ShooterPIDTeleOp")
 public class Teleop1 extends LinearOpMode {
@@ -48,13 +51,15 @@ public class Teleop1 extends LinearOpMode {
     static final double TICKS_PER_REV = 28.0;
     static final double TARGET_RPM    = 4000.0;
 
-    // Feeding is gated on RPM with hysteresis so a shot's RPM dip doesn't cause
-    // rapid on/off chatter: start feeding once within RPM_TOLERANCE_ENTER of
-    // target, stop feeding only once RPM has dropped further, past
-    // RPM_TOLERANCE_EXIT. This forces the flywheel to fully recover between
-    // shots instead of firing balls back-to-back into a slowing wheel.
-    static final double RPM_TOLERANCE_ENTER = 100.0;
-    static final double RPM_TOLERANCE_EXIT  = 300.0;
+    // Balls are fed in short pulses rather than one continuous run, so the
+    // flywheel only ever has to recover from a single shot at a time instead
+    // of several stacked shots. A pulse only starts once RPM is within
+    // RPM_TOLERANCE_ENTER of target, and runs for FEED_PULSE_SECONDS -- tune
+    // that duration on the real robot to the shortest time that reliably
+    // pushes exactly one ball into the flywheel (too short: balls jam short
+    // of the wheel; too long: a second ball sneaks in before RPM recovers).
+    static final double RPM_TOLERANCE_ENTER  = 100.0;
+    static final double FEED_PULSE_SECONDS   = 0.15;
 
     static final double INTEGRAL_MAX = 4000.0; // clamps integral windup
     static final double RPM_FILTER_A = 0.2;    // low-pass filter coefficient (0-1, lower = smoother)
@@ -82,6 +87,9 @@ public class Teleop1 extends LinearOpMode {
     private double lastError = 0;
     private final ElapsedTime pidTimer = new ElapsedTime();
 
+    // Tracks how long the current feed pulse has been running.
+    private final ElapsedTime feedTimer = new ElapsedTime();
+
     // Filtered RPM state
     private double filteredRPM = 0;
     private double rawRPM = 0;
@@ -93,7 +101,7 @@ public class Teleop1 extends LinearOpMode {
     // Mode state
     private boolean shooterMode = false;
     private boolean intakeMode = false;
-    private boolean feeding = false; // true while flywheel is at speed and balls are being fed
+    private boolean feeding = false; // true while a feed pulse is currently running
 
     // Button edge-detection state
     private boolean lastLeftBumperG2 = false;
@@ -254,13 +262,12 @@ public class Teleop1 extends LinearOpMode {
         shooterLeftMotor.setPower(power);
 
         if (feeding) {
-            if (currentRPM < TARGET_RPM - RPM_TOLERANCE_EXIT) {
-                feeding = false; // a shot just dropped RPM too far; wait for recovery
+            if (feedTimer.seconds() >= FEED_PULSE_SECONDS) {
+                feeding = false; // pulse finished; wait for RPM to recover before the next one
             }
-        } else {
-            if (currentRPM >= TARGET_RPM - RPM_TOLERANCE_ENTER) {
-                feeding = true; // flywheel is back up to speed; resume feeding
-            }
+        } else if (currentRPM >= TARGET_RPM - RPM_TOLERANCE_ENTER) {
+            feeding = true; // flywheel has recovered from the last shot; fire the next pulse
+            feedTimer.reset();
         }
 
         if (feeding) {
@@ -304,7 +311,7 @@ public class Teleop1 extends LinearOpMode {
 
     private void updateTelemetry() {
         telemetry.addData("Mode", shooterMode ? "SHOOTER" : (intakeMode ? "INTAKE" : "IDLE"));
-        telemetry.addData("Feeding (RPM gated)", feeding);
+        telemetry.addData("Feed Pulse Active", feeding);
         telemetry.addData("Slow Drive Mode", slowDriveMode ? "ON (0.5)" : "OFF (1.0)");
         telemetry.addData("Shooter RPM (raw)", "%.1f", rawRPM);
         telemetry.addData("Shooter RPM (filtered)", "%.1f", filteredRPM);
