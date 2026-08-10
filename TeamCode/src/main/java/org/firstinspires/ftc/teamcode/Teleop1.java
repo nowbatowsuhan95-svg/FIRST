@@ -84,7 +84,11 @@ public class Teleop1 extends LinearOpMode {
 
     // Filtered RPM state
     private double filteredRPM = 0;
+    private double rawRPM = 0;
     private boolean filterInitialized = false;
+
+    // Last commanded shooter power, kept for diagnostics telemetry.
+    private double lastShooterPower = 0;
 
     // Mode state
     private boolean shooterMode = false;
@@ -245,6 +249,7 @@ public class Teleop1 extends LinearOpMode {
     private void runShooterMode() {
         double currentRPM = getFilteredShooterRPM();
         double power = calculatePID(TARGET_RPM, currentRPM);
+        lastShooterPower = power;
         shooterRightMotor.setPower(power);
         shooterLeftMotor.setPower(power);
 
@@ -301,8 +306,15 @@ public class Teleop1 extends LinearOpMode {
         telemetry.addData("Mode", shooterMode ? "SHOOTER" : (intakeMode ? "INTAKE" : "IDLE"));
         telemetry.addData("Feeding (RPM gated)", feeding);
         telemetry.addData("Slow Drive Mode", slowDriveMode ? "ON (0.5)" : "OFF (1.0)");
+        telemetry.addData("Shooter RPM (raw)", "%.1f", rawRPM);
         telemetry.addData("Shooter RPM (filtered)", "%.1f", filteredRPM);
         telemetry.addData("Target RPM", TARGET_RPM);
+        telemetry.addData("Shooter Power", "%.2f", lastShooterPower);
+        if (shooterMode && lastShooterPower >= 0.98 && filteredRPM < TARGET_RPM - RPM_TOLERANCE_ENTER) {
+            telemetry.addData("WARNING", "Motor pinned at full power but RPM plateaued below target -- "
+                    + "this is a hardware ceiling, not a PID tuning issue. Lower TARGET_RPM to the "
+                    + "plateaued value (with margin), or check gearing/battery/TICKS_PER_REV.");
+        }
         telemetry.update();
     }
 
@@ -318,12 +330,12 @@ public class Teleop1 extends LinearOpMode {
 
     /** Low-pass filtered RPM, so encoder noise doesn't blow up the PID's D term. */
     private double getFilteredShooterRPM() {
-        double raw = getShooterRPM();
+        rawRPM = getShooterRPM();
         if (!filterInitialized) {
-            filteredRPM = raw;
+            filteredRPM = rawRPM;
             filterInitialized = true;
         } else {
-            filteredRPM = RPM_FILTER_A * raw + (1 - RPM_FILTER_A) * filteredRPM;
+            filteredRPM = RPM_FILTER_A * rawRPM + (1 - RPM_FILTER_A) * filteredRPM;
         }
         return filteredRPM;
     }
