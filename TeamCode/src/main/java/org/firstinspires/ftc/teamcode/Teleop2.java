@@ -28,6 +28,7 @@ public class Teleop2 extends LinearOpMode {
 
     static final double TARGET_VELOCITY   = 1750;   // ticks/sec
     static final double INTEGRAL_LIMIT    = 300;
+    static final double BALLGIVER_ERROR_LIMIT = 500; // error bu değere ulaşınca ballGiverMotor durur
 
     static final double DRIVE_POWER       = 1.0;
     static final double TURN_POWER        = 1.0;
@@ -195,11 +196,16 @@ public class Teleop2 extends LinearOpMode {
         }
 
         intakeMotor.setPower(feeding ? INTAKE_POWER : 0);
-        ballGiverMotor.setPower(feeding ? BALLGIVER_POWER : 0);
         mixerMotor.setPower(feeding ? BALLGIVER_POWER :0);
+
+        // Error 500'e ulaşınca ball giver motoru dursun, error tekrar
+        // 500'ün altına düşünce (feeding devam ediyorsa) yeniden çalışsın.
+        boolean ballGiverActive = feeding && Math.abs(lastError) < BALLGIVER_ERROR_LIMIT;
+        ballGiverMotor.setPower(ballGiverActive ? BALLGIVER_POWER : 0);
 
         telemetry.addData("Velocity", "%.0f", velocity);
         telemetry.addData("Feeding",  feeding);
+        telemetry.addData("BallGiver", ballGiverActive);
     }
 
     private void runIdleMode() {
