@@ -252,7 +252,15 @@ public class Teleop extends LinearOpMode {
 
         telemetry.addData("Velocity (raw)",      "%.0f", rawVelocity);
         telemetry.addData("Velocity (filtered)", "%.0f", filteredVelocity);
+        telemetry.addData("Shooter Power",       "%.2f", power);
         telemetry.addData("Feeding (latched)",   feeding);
+        if (power >= 0.98 && filteredVelocity < TARGET_VELOCITY - FEED_ENTER_TOLERANCE) {
+            telemetry.addData("WARNING", "Motor tam guçte ama hedefe ulaşamıyor -- bu bir "
+                    + "PID ayar sorunu DEĞİL, donanım tavanı (motor/gearing/batarya topu bu "
+                    + "hızda sürekli sıkıştıracak gücü yetiştiremiyor). PID gainleri artık "
+                    + "hiçbir şey değiştirmez; TARGET_VELOCITY'i düşürün, sıkıştırmayı azaltın "
+                    + "ya da daha güçlü motor/redüksiyon kullanın.");
+        }
     }
 
     private void runIdleMode() {
