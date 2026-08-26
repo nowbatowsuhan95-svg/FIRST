@@ -16,14 +16,10 @@ import com.qualcomm.robotcore.util.ElapsedTime;
  * kadar intake/mixer/ballGiver hiç durmadan (asla 0 güce inmeden) çalışır --
  * 35 topu art arda ateşlemek için ara vermeden beslemeyi garantiler.
  *
- * ballGiverMotor topu doğrudan flywheel'e ittiği için sürekli tam güçte
- * çalışması flywheel'in toparlanmasına hiç zaman bırakmıyordu -- ilk top
- * iyi gidiyor, sonrakiler RPM daha toparlanmadan itildiği için hedefe
- * varamıyordu. Çözüm: ballGiverMotor artık error büyüdükçe (flywheel geride
- * kaldıkça) YAVAŞLIYOR ama asla BALLGIVER_MIN_POWER'ın altına, yani asla
- * 0'a inmiyor -- "durmuyor" şartı korunuyor, flywheel'e nefes alma payı
- * veriliyor. Ayrıca sürekli tam güç çekiminde batarya voltajı düştükçe
- * motor gücü de düşer; bunu telafi etmek için voltaj kompanzasyonu eklendi.
+ * ballGiverMotor error'a bakılmaksızın hep BALLGIVER_POWER (1.0) ile
+ * çalışır -- toparlanma yükü tamamen shooter PID + feedforward'a ait.
+ * Ayrıca sürekli tam güç çekiminde batarya voltajı düştükçe motor gücü de
+ * düşer; bunu telafi etmek için voltaj kompanzasyonu eklendi.
  */
 @TeleOp(name = "Teleop")
 public class Teleop extends LinearOpMode {
@@ -52,7 +48,7 @@ public class Teleop extends LinearOpMode {
 
     static final double KP = 0.0035;
     static final double KI = 0.00003;
-    static final double KD = 0.00012;
+    static final double KD = 0.00018;
 
     static final double TARGET_VELOCITY = 1900;   // ticks/sec
     static final double INTEGRAL_LIMIT  = 4000;
@@ -74,14 +70,8 @@ public class Teleop extends LinearOpMode {
     static final double TURN_POWER        = 1.0;
     static final double INTAKE_POWER      = 1.0;
     static final double MIXER_POWER       = 1.0;
+    static final double BALLGIVER_POWER   = 1.0;
     static final double LIFT_POWER        = 1.0;
-
-    // ballGiverMotor error'a göre bu iki değer arasında ölçeklenir: hedefe
-    // yakınken BALLGIVER_POWER (tam güç), error BALLGIVER_RECOVERY_SPAN'a
-    // ulaştığında BALLGIVER_MIN_POWER (asla 0 değil -- hiç durmaz).
-    static final double BALLGIVER_POWER         = 1.0;
-    static final double BALLGIVER_MIN_POWER     = 0.35;
-    static final double BALLGIVER_RECOVERY_SPAN = 500;
 
     static final double SERVO_POS_LOW     = 0.99;
     static final double SERVO_POS_HIGH    = 0.70;
@@ -254,19 +244,15 @@ public class Teleop extends LinearOpMode {
             feeding = true;
         }
 
-        // intake ve mixer flywheel'i doğrudan yüklemiyor, tam güçte kesintisiz
-        // çalışabilirler. ballGiver ise topu doğrudan flywheel'e ittiği için
-        // error büyüdükçe yavaşlatılır (ama asla durdurulmaz) -- böylece
-        // flywheel toparlanmadan bir top daha zorla itilmiş olmaz.
+        // Hedefe ulaşınca üçü de tam güçte, kesintisiz çalışır. Toparlanmayı
+        // hızlı tutmak artık tamamen calculatePID'deki feedforward + PID'in işi.
         intakeMotor.setPower(feeding ? INTAKE_POWER : 0);
         mixerMotor.setPower(feeding ? MIXER_POWER : 0);
-        double ballGiverPower = feeding ? ballGiverPowerForError(lastError) : 0;
-        ballGiverMotor.setPower(ballGiverPower);
+        ballGiverMotor.setPower(feeding ? BALLGIVER_POWER : 0);
 
         telemetry.addData("Velocity (raw)",      "%.0f", rawVelocity);
         telemetry.addData("Velocity (filtered)", "%.0f", filteredVelocity);
         telemetry.addData("Feeding (latched)",   feeding);
-        telemetry.addData("BallGiver Power",     "%.2f", ballGiverPower);
     }
 
     private void runIdleMode() {
@@ -276,13 +262,6 @@ public class Teleop extends LinearOpMode {
         ballGiverMotor.setPower(0);
         mixerMotor.setPower(0);
         resetShooterState();
-    }
-
-    // error büyüdükçe BALLGIVER_POWER'dan BALLGIVER_MIN_POWER'a doğru
-    // doğrusal olarak azalır, hiçbir zaman 0'a inmez.
-    private double ballGiverPowerForError(double error) {
-        double t = Math.min(1.0, Math.abs(error) / BALLGIVER_RECOVERY_SPAN);
-        return BALLGIVER_POWER - t * (BALLGIVER_POWER - BALLGIVER_MIN_POWER);
     }
 
     // Manual PID + feedforward — target/current ticks/sec, çıkış [0, 1] aralığında
