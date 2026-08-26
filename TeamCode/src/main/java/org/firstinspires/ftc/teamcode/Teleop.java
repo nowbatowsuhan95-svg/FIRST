@@ -47,8 +47,8 @@ public class Teleop extends LinearOpMode {
     static final double KF = 1.0 / FREE_SPEED_ESTIMATE;
 
     static final double KP = 0.0035;
-    static final double KI = 0.00003;
-    static final double KD = 0.00018;
+    static final double KI = 0.00006;
+    static final double KD = 0.00022;
 
     static final double TARGET_VELOCITY = 1900;   // ticks/sec
     static final double INTEGRAL_LIMIT  = 4000;
@@ -272,20 +272,29 @@ public class Teleop extends LinearOpMode {
         pidTimer.reset();
         if (dt <= 0) dt = 0.001;
 
-        // Anti-windup: yalnızca hata makul aralıktayken integral biriktir,
-        // büyük sıçramalarda (atış anı) integral'i sıfırla.
-        if (Math.abs(error) < 400) {
-            integral = Math.max(-INTEGRAL_LIMIT, Math.min(INTEGRAL_LIMIT, integral + error * dt));
-        } else {
-            integral = 0;
+        double pTerm = KP * error;
+        double fTerm = KF * target;
+        double dTerm = KD * (error - lastError) / dt;
+        lastError = error;
+
+        // Doğru anti-windup: KP+KF her gerçek hatada gücü zaten 1.0'a
+        // saturasyona ulaştırıyor -- bu durumda integral eskisi gibi
+        // biriktirilmeye devam ederse (eski kod |error|<400 iken hep
+        // birikiyordu), flywheel toparlanınca elde fazladan bir "borç"
+        // güç birikmiş olur; bu, RPM hedefi aşıp geri sönümlenmesine
+        // (salınım/hunting) yol açar ve bu salınım sonraki topların
+        // toparlanma süresini yer. Şimdi integral SADECE çıkış zaten
+        // sınırda değilken, ya da hatanın çıkışı sınırdan geri çekeceği
+        // yöndeyken birikir.
+        double candidateIntegral = integral + error * dt;
+        double candidateOutput = pTerm + fTerm + dTerm + KI * candidateIntegral;
+        boolean pinnedHigh = candidateOutput > 1.0 && error > 0;
+        boolean pinnedLow  = candidateOutput < 0.0 && error < 0;
+        if (!pinnedHigh && !pinnedLow) {
+            integral = Math.max(-INTEGRAL_LIMIT, Math.min(INTEGRAL_LIMIT, candidateIntegral));
         }
 
-        double dTerm = KD * (error - lastError) / dt;
-        double pTerm = KP * error;
         double iTerm = KI * integral;
-        double fTerm = KF * target;
-
-        lastError = error;
         double rawPower = pTerm + iTerm + dTerm + fTerm;
 
         // Batarya voltajı düştükçe aynı güç fraksiyonu daha az tork üretir;
