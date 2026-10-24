@@ -10,16 +10,21 @@ Finger Mouse - control the desktop cursor with your index finger.
 
 Press 'q' or ESC in the preview window to quit.
 
+Works on Python 3.9 - 3.14.
 Requirements: pip install -r requirements.txt
+The hand-tracking model (~8 MB) is downloaded next to this file on first run.
 """
 
 import time
+import urllib.request
 from collections import deque
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
 import numpy as np
 import pyautogui
+from mediapipe.tasks.python import BaseOptions, vision
 
 # ---------------------------------------------------------------- settings
 CAMERA_INDEX = 0
@@ -42,6 +47,10 @@ PINCH_DISTANCE = 0.05       # normalized distance that counts as a pinch
 
 pyautogui.PAUSE = 0         # no built-in delay after each pyautogui call
 pyautogui.FAILSAFE = True   # slam the mouse into a corner to abort
+
+MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+             "hand_landmarker/float16/latest/hand_landmarker.task")
+MODEL_PATH = Path(__file__).with_name("hand_landmarker.task")
 
 # MediaPipe hand landmark indices
 WRIST, THUMB_TIP = 0, 4
@@ -89,6 +98,22 @@ def index_is_up(lm):
     return lm[INDEX_TIP].y < lm[INDEX_PIP].y
 
 
+def load_hand_tracker():
+    if not MODEL_PATH.exists():
+        print("Downloading hand-tracking model (first run only)...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+
+    options = vision.HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.7,
+        min_hand_presence_confidence=0.6,
+        min_tracking_confidence=0.6,
+    )
+    return vision.HandLandmarker.create_from_options(options)
+
+
 def main():
     screen_w, screen_h = pyautogui.size()
 
@@ -98,13 +123,8 @@ def main():
     if not cap.isOpened():
         raise SystemExit("Could not open the webcam.")
 
-    hands = mp.solutions.hands.Hands(
-        max_num_hands=1,
-        model_complexity=0,
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.6,
-    )
-    drawer = mp.solutions.drawing_utils
+    hands = load_hand_tracker()
+    last_timestamp_ms = 0
 
     push = PushDetector()
     cursor_trail = deque()              # (timestamp, x, y) of recent cursor positions
@@ -122,16 +142,21 @@ def main():
 
             frame = cv2.flip(frame, 1)  # mirror so movement feels natural
             h, w = frame.shape[:2]
-            result = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             now = time.time()
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Video mode needs strictly increasing timestamps.
+            timestamp_ms = max(int(time.monotonic() * 1000), last_timestamp_ms + 1)
+            last_timestamp_ms = timestamp_ms
+            result = hands.detect_for_video(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp_ms)
 
             cv2.rectangle(frame, (FRAME_MARGIN, FRAME_MARGIN),
                           (w - FRAME_MARGIN, h - FRAME_MARGIN), (255, 0, 255), 2)
 
-            if result.multi_hand_landmarks:
-                hand = result.multi_hand_landmarks[0]
-                lm = hand.landmark
-                drawer.draw_landmarks(frame, hand, mp.solutions.hands.HAND_CONNECTIONS)
+            if result.hand_landmarks:
+                lm = result.hand_landmarks[0]
+                vision.drawing_utils.draw_landmarks(
+                    frame, lm, vision.HandLandmarksConnections.HAND_CONNECTIONS)
 
                 if index_is_up(lm):
                     # 1) Move the cursor with the index fingertip.
