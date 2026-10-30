@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fire Watch</title>
+<style>
+:root{--bg:#14110f;--panel:#1f1a17;--line:#352d28;--fg:#f1e9e2;--mute:#a1948a;--ok:#4cc38a;--warn:#ff5a36;--btn:#ff7a1a;--btnfg:#1a0d02}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,Segoe UI,sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 40px;display:grid;gap:16px}
+h1{font-size:1.4rem;margin:0}
+.sub{color:var(--mute);margin:2px 0 0}
+.stage{position:relative;background:#000;border:2px solid var(--line);border-radius:6px;overflow:hidden;aspect-ratio:4/3;max-height:70vh}
+.stage.alarm{border-color:var(--warn);box-shadow:0 0 0 3px var(--warn)}
+video,canvas.ov{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.status{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+.pill{font-weight:700;padding:3px 10px;border-radius:99px;background:var(--ok);color:#06210f}
+.pill.alarm{background:var(--warn);color:#fff}
+.pill.idle{background:var(--line);color:var(--mute)}
+.bar{flex:1;min-width:160px;height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--btn)}
+.row{display:flex;flex-wrap:wrap;gap:10px}
+button,label.btn{font:inherit;font-weight:600;padding:9px 16px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer}
+button.primary{background:var(--btn);color:var(--btnfg);border-color:var(--btn)}
+button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:2px}
+details{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px}
+summary{cursor:pointer;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px}
+label.f{display:grid;gap:4px;color:var(--mute);font-size:.85rem}
+input[type=text],input[type=email],input[type=password],input[type=number]{font:inherit;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg);min-width:0;width:100%}
+.log{font:13px ui-monospace,Consolas,monospace;color:var(--mute);max-height:140px;overflow:auto;white-space:pre-wrap}
+ol{margin:8px 0 0;padding-left:20px;color:var(--mute)}
+a{color:var(--btn)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Fire Watch</h1>
+    <p class="sub">Watches your camera for flickering fire-coloured regions and emails an alert. Not a substitute for a smoke alarm.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <video id="vid" playsinline muted></video>
+    <canvas class="ov" id="ov"></canvas>
+  </div>
+
+  <div class="status">
+    <span class="pill idle" id="pill">Stopped</span>
+    <span>Fire-like area <b id="ratio">0.0%</b></span>
+    <span>Flicker <b id="flick">0%</b></span>
+    <div class="bar" title="Frames flagged in the last 10"><i id="hits"></i></div>
+  </div>
+
+  <div class="row">
+    <button class="primary" id="start">Start camera</button>
+    <button id="stop" disabled>Stop</button>
+    <label class="btn">Test with a video file<input type="file" id="file" accept="video/*" hidden></label>
+    <button id="testmail">Send test email</button>
+  </div>
+
+  <details id="cfg" open>
+    <summary>Email settings (saved only in this browser)</summary>
+    <ol>
+      <li>Create a free account at <a href="https://www.emailjs.com" target="_blank" rel="noopener">emailjs.com</a> and add the <b>Gmail</b> service (sends from your Gmail).</li>
+      <li>Create a template with Subject <code>{{subject}}</code>, To email <code>{{to_email}}</code>, body <code>{{message}}</code>.</li>
+      <li>Paste the Service ID, Template ID and Public Key below.</li>
+    </ol>
+    <div class="grid">
+      <label class="f">Send alerts to<input type="email" id="to" value="nowbatowsuhan95@gmail.com"></label>
+      <label class="f">Service ID<input type="text" id="svc" placeholder="service_xxxxxxx"></label>
+      <label class="f">Template ID<input type="text" id="tpl" placeholder="template_xxxxxxx"></label>
+      <label class="f">Public key<input type="password" id="key" placeholder="public key"></label>
+      <label class="f">Minutes between emails<input type="number" id="cool" min="1" value="5"></label>
+    </div>
+  </details>
+
+  <div class="log" id="log" role="log" aria-live="polite"></div>
+</main>
+
+<script>
+"use strict";
+// ---- detector (same method as the Python version) ----
+const W = 320, MIN_FIRE = 0.004, MIN_FLICKER = 0.15, WINDOW = 10, REQUIRED = 7;
+
+class Detector {
+  constructor() { this.prev = null; this.hits = []; }
+  // data: RGBA Uint8ClampedArray of a W x H frame. Returns {alarm, ratio, flicker, mask}
+  update(data) {
+    const n = data.length / 4, mask = new Uint8Array(n);
+    let fire = 0;
+    for (let i = 0, p = 0; i < n; i++, p += 4) {
+      const r = data[p], g = data[p + 1], b = data[p + 2];
+      // bright (V>=200), saturated (S>=0.43), hue red..yellow (R>=G>=B)
+      if (r >= 200 && r >= g && g >= b && (r - b) >= 0.43 * r) { mask[i] = 1; fire++; }
+    }
+    const ratio = fire / n;
+    let flicker = 0;
+    if (this.prev && fire) {
+      let ch = 0;
+      for (let i = 0; i < n; i++) if (mask[i] !== this.prev[i]) ch++;
+      flicker = ch / fire;
+    }
+    this.prev = mask;
+    this.hits.push(ratio >= MIN_FIRE && flicker >= MIN_FLICKER);
+    if (this.hits.length > WINDOW) this.hits.shift();
+    const count = this.hits.filter(Boolean).length;
+    return { alarm: count >= REQUIRED, ratio, flicker, mask, count };
+  }
+}
+window.__fire = { Detector, W };
+
+// ---- app ----
+const $ = id => document.getElementById(id);
+const vid = $("vid"), ov = $("ov"), stage = $("stage");
+const work = document.createElement("canvas"), wctx = work.getContext("2d", { willReadFrequently: true });
+let det = null, stream = null, raf = 0, lastSent = 0, lastRun = 0, beeper = null;
+
+const fields = ["to", "svc", "tpl", "key", "cool"];
+try { const s = JSON.parse(localStorage.getItem("firewatch") || "{}"); fields.forEach(f => { if (s[f]) $(f).value = s[f]; }); } catch {}
+fields.forEach(f => $(f).addEventListener("change", () => {
+  try { localStorage.setItem("firewatch", JSON.stringify(Object.fromEntries(fields.map(k => [k, $(k).value])))); } catch {}
+}));
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${msg}\n` + $("log").textContent;
+}
+
+async function sendEmail(subject, message) {
+  const svc = $("svc").value.trim(), tpl = $("tpl").value.trim(), key = $("key").value.trim();
+  if (!svc || !tpl || !key) { log("Email not sent: fill in the EmailJS Service ID, Template ID and Public key."); $("cfg").open = true; return false; }
+  try {
+    const r = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ service_id: svc, template_id: tpl, user_id: key,
+        template_params: { to_email: $("to").value.trim(), subject, message } })
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    log(`Email sent to ${$("to").value.trim()}`);
+    return true;
+  } catch (e) { log("Email FAILED: " + e.message); return false; }
+}
+
+function beep() {
+  try {
+    beeper = beeper || new AudioContext();
+    const o = beeper.createOscillator(); o.frequency.value = 880; o.connect(beeper.destination);
+    o.start(); o.stop(beeper.currentTime + 0.4);
+  } catch {}
+}
+
+function loop(ts) {
+  raf = requestAnimationFrame(loop);
+  if (ts - lastRun < 100 || vid.readyState < 2 || !vid.videoWidth) return; // ~10 fps
+  lastRun = ts;
+  const H = Math.round(W * vid.videoHeight / vid.videoWidth);
+  if (work.width !== W || work.height !== H) { work.width = W; work.height = H; ov.width = W; ov.height = H; }
+  wctx.drawImage(vid, 0, 0, W, H);
+  const img = wctx.getImageData(0, 0, W, H);
+  const res = det.update(img.data);
+
+  // overlay: highlight fire-like pixels
+  const octx = ov.getContext("2d"), out = octx.createImageData(W, H);
+  for (let i = 0; i < res.mask.length; i++) if (res.mask[i]) { const p = i * 4; out.data[p] = 255; out.data[p + 1] = 40; out.data[p + 3] = 140; }
+  octx.putImageData(out, 0, 0);
+
+  $("ratio").textContent = (res.ratio * 100).toFixed(1) + "%";
+  $("flick").textContent = Math.round(Math.min(res.flicker, 9.99) * 100) + "%";
+  $("hits").style.width = (res.count / WINDOW * 100) + "%";
+  const pill = $("pill");
+  pill.textContent = res.alarm ? "FIRE DETECTED" : "Watching";
+  pill.className = "pill" + (res.alarm ? " alarm" : "");
+  stage.classList.toggle("alarm", res.alarm);
+
+  const cool = Math.max(1, +$("cool").value || 5) * 60000;
+  if (res.alarm && Date.now() - lastSent > cool) {
+    lastSent = Date.now();
+    beep();
+    const now = new Date().toLocaleString();
+    log("FIRE detected - sending email");
+    sendEmail(`FIRE ALERT - possible fire detected (${now})`,
+      `Possible fire detected by camera at ${now}. Fire-like area: ${(res.ratio * 100).toFixed(1)}% of frame. This is an automated heuristic - verify and call emergency services if real.`);
+  }
+}
+
+function begin() {
+  det = new Detector(); cancelAnimationFrame(raf); raf = requestAnimationFrame(loop);
+  $("stop").disabled = false;
+}
+function halt() {
+  cancelAnimationFrame(raf);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; vid.srcObject = null; vid.removeAttribute("src");
+  $("stop").disabled = true; $("pill").textContent = "Stopped"; $("pill").className = "pill idle";
+  stage.classList.remove("alarm");
+}
+
+$("start").onclick = async () => {
+  halt();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    vid.srcObject = stream; await vid.play(); begin(); log("Camera started");
+  } catch (e) { log("Cannot open camera: " + e.message + " (allow camera access; use https or localhost)"); }
+};
+$("stop").onclick = () => { halt(); log("Stopped"); };
+$("file").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  halt(); vid.src = URL.createObjectURL(f); vid.loop = true; await vid.play(); begin(); log("Testing with " + f.name);
+};
+$("testmail").onclick = () => sendEmail("Fire Watch test", "This is a test message from Fire Watch.");
+</script>
+</body>
+</html>
